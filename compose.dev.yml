@@ -1,0 +1,310 @@
+# Development Docker Compose for ERPNext on Hanzo
+# Domain: erp-dev.hanzo.ai
+# Self-initializing - no manual setup required
+
+services:
+  # Database Service
+  db:
+    restart: always
+    image: mariadb:10.6
+    platform: linux/amd64
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+      - --skip-innodb-read-only-compressed
+      - --max_connections=100
+      - --innodb_buffer_pool_size=512M
+      - --innodb_log_file_size=128M
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: erpnext_dev
+    volumes:
+      - erp-mariadb-dev:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "--password=${DB_PASSWORD}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - hanzo-network
+
+  # Redis Services
+  redis-cache:
+    restart: always
+    image: redis:7-alpine
+    platform: linux/amd64
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - erp-redis-cache-dev:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - hanzo-network
+
+  redis-queue:
+    restart: always
+    image: redis:7-alpine
+    platform: linux/amd64
+    command: redis-server --appendonly yes
+    volumes:
+      - erp-redis-queue-dev:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - hanzo-network
+
+  # Configurator - sets up config AND creates site if needed
+  configurator:
+    image: frappe/erpnext:v15.62.0
+    platform: linux/amd64
+    restart: "no"
+    entrypoint:
+      - bash
+      - -c
+    command:
+      - |
+        # Configure bench
+        ls -1 apps > sites/apps.txt
+        bench set-config -g db_host db
+        bench set-config -gp db_port 3306
+        bench set-config -g redis_cache "redis://redis-cache:6379"
+        bench set-config -g redis_queue "redis://redis-queue:6379"
+        bench set-config -g redis_socketio "redis://redis-queue:6379"
+        bench set-config -gp socketio_port 9000
+        
+        # Wait for DB to be fully ready
+        echo "Waiting for database..."
+        until mysql -h db -u root -p${DB_PASSWORD} -e "SELECT 1" > /dev/null 2>&1; do
+          sleep 2
+        done
+        
+        # Check if site exists
+        if bench --site erp-dev.hanzo.ai list 2>/dev/null | grep -q "erp-dev.hanzo.ai"; then
+          echo "Site erp-dev.hanzo.ai already exists"
+        else
+          echo "Creating new site erp-dev.hanzo.ai"
+          bench new-site erp-dev.hanzo.ai \
+            --mariadb-root-password ${DB_PASSWORD} \
+            --admin-password ${ADMIN_PASSWORD} \
+            --install-app erpnext \
+            --set-default
+        fi
+        
+        # Set as default site
+        bench use erp-dev.hanzo.ai
+        
+        # Enable scheduler
+        bench --site erp-dev.hanzo.ai enable-scheduler
+        
+        # Set development settings
+        bench --site erp-dev.hanzo.ai set-config developer_mode 1
+        bench --site erp-dev.hanzo.ai set-config host_name "https://erp-dev.hanzo.ai"
+        
+        # Clear cache
+        bench --site erp-dev.hanzo.ai clear-cache
+        
+        echo "Development site configuration completed"
+    environment:
+      DB_PASSWORD: ${DB_PASSWORD}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+    volumes:
+      - erp-sites-dev:/home/frappe/frappe-bench/sites
+    depends_on:
+      db:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    networks:
+      - hanzo-network
+
+  # Backend Service
+  backend:
+    restart: always
+    image: frappe/erpnext:v15.62.0
+    platform: linux/amd64
+    extra_hosts:
+      - "erp-dev.hanzo.ai:host-gateway"
+      - "172.17.0.1:host-gateway"
+    environment:
+      RUNNING_IN_DOCKER: "true"
+      DEVELOPER_MODE: "1"
+    volumes:
+      - erp-sites-dev:/home/frappe/frappe-bench/sites
+    tmpfs:
+      - /tmp:exec,mode=1777
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    networks:
+      - hanzo-network
+
+  # Frontend Service (Nginx)
+  frontend:
+    restart: always
+    image: frappe/erpnext:v15.62.0
+    platform: linux/amd64
+    command:
+      - nginx-entrypoint.sh
+    extra_hosts:
+      - "erp-dev.hanzo.ai:host-gateway"
+      - "172.17.0.1:host-gateway"
+    environment:
+      BACKEND: backend:8000
+      SOCKETIO: websocket:9000
+      FRAPPE_SITE_NAME_HEADER: erp-dev.hanzo.ai
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
+      UPSTREAM_REAL_IP_RECURSIVE: off
+      PROXY_READ_TIMEOUT: 120
+      CLIENT_MAX_BODY_SIZE: 50m
+      RUNNING_IN_DOCKER: "true"
+    volumes:
+      - erp-sites-dev:/home/frappe/frappe-bench/sites
+    tmpfs:
+      - /tmp:exec,mode=1777
+    depends_on:
+      - backend
+      - websocket
+    labels:
+      - "traefik.enable=true"
+      # Headers middleware
+      - "traefik.http.middlewares.well-known.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.erp-dev-headers.headers.customRequestHeaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.erp-dev-headers.headers.customRequestHeaders.X-Forwarded-Host=erp-dev.hanzo.ai"
+      # Redirect middleware
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
+      # CSP middleware
+      - "traefik.http.middlewares.erp-dev-csp.headers.customResponseHeaders.Content-Security-Policy=default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' https://erp-dev.hanzo.ai http://erp-dev.hanzo.ai wss://erp-dev.hanzo.ai ws://erp-dev.hanzo.ai; img-src 'self' data: blob: https:; font-src 'self' data:; frame-ancestors 'self';"
+      # HTTP router
+      - "traefik.http.routers.erp-dev-http.rule=Host(`erp-dev.hanzo.ai`)"
+      - "traefik.http.routers.erp-dev-http.entrypoints=web"
+      - "traefik.http.routers.erp-dev-http.middlewares=well-known,erp-dev-headers,erp-dev-csp,redirect-to-https"
+      # HTTPS router
+      - "traefik.http.routers.erp-dev-https.rule=Host(`erp-dev.hanzo.ai`)"
+      - "traefik.http.routers.erp-dev-https.entrypoints=websecure"
+      - "traefik.http.routers.erp-dev-https.middlewares=well-known,erp-dev-headers,erp-dev-csp"
+      - "traefik.http.routers.erp-dev-https.tls.certresolver=letsencrypt"
+      # Service configuration
+      - "traefik.http.services.erp-dev.loadbalancer.server.port=8080"
+      # WebSocket support
+      - "traefik.http.services.erp-dev.loadbalancer.passhostheader=true"
+    networks:
+      - hanzo-network
+
+  # WebSocket Service
+  websocket:
+    restart: always
+    image: frappe/erpnext:v15.62.0
+    platform: linux/amd64
+    command:
+      - node
+      - /home/frappe/frappe-bench/apps/frappe/socketio.js
+    extra_hosts:
+      - "erp-dev.hanzo.ai:host-gateway"
+      - "172.17.0.1:host-gateway"
+    environment:
+      RUNNING_IN_DOCKER: "true"
+    volumes:
+      - erp-sites-dev:/home/frappe/frappe-bench/sites
+    tmpfs:
+      - /tmp:exec,mode=1777
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    networks:
+      - hanzo-network
+
+  # Worker Queues
+  queue-short:
+    restart: always
+    image: frappe/erpnext:v15.62.0
+    platform: linux/amd64
+    command: bench worker --queue short,default
+    extra_hosts:
+      - "erp-dev.hanzo.ai:host-gateway"
+      - "172.17.0.1:host-gateway"
+    environment:
+      RUNNING_IN_DOCKER: "true"
+    volumes:
+      - erp-sites-dev:/home/frappe/frappe-bench/sites
+    tmpfs:
+      - /tmp:exec,mode=1777
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    networks:
+      - hanzo-network
+
+  queue-long:
+    restart: always
+    image: frappe/erpnext:v15.62.0
+    platform: linux/amd64
+    command: bench worker --queue long,default,short
+    extra_hosts:
+      - "erp-dev.hanzo.ai:host-gateway"
+      - "172.17.0.1:host-gateway"
+    environment:
+      RUNNING_IN_DOCKER: "true"
+    volumes:
+      - erp-sites-dev:/home/frappe/frappe-bench/sites
+    tmpfs:
+      - /tmp:exec,mode=1777
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    networks:
+      - hanzo-network
+
+  # Scheduler Service
+  scheduler:
+    restart: always
+    image: frappe/erpnext:v15.62.0
+    platform: linux/amd64
+    command: bench schedule
+    extra_hosts:
+      - "erp-dev.hanzo.ai:host-gateway"
+      - "172.17.0.1:host-gateway"
+    environment:
+      RUNNING_IN_DOCKER: "true"
+    volumes:
+      - erp-sites-dev:/home/frappe/frappe-bench/sites
+    tmpfs:
+      - /tmp:exec,mode=1777
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    networks:
+      - hanzo-network
+
+# Volumes
+volumes:
+  erp-mariadb-dev:
+    name: erp-mariadb-dev
+  erp-redis-cache-dev:
+    driver: local
+  erp-redis-queue-dev:
+    driver: local
+  erp-sites-dev:
+    name: erp-sites-dev
+
+# Networks
+networks:
+  hanzo-network:
+    external: true
