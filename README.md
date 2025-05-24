@@ -1,6 +1,6 @@
 # ERPNext Docker Deployment for Hanzo
 
-Self-initializing Docker configurations for deploying ERPNext on Hanzo (Dokploy). No manual setup required - just deploy and go!
+Self-initializing Docker configurations for deploying ERPNext on Hanzo. No manual setup required - just deploy and go!
 
 ## 🌐 Environments
 
