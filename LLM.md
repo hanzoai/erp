@@ -234,3 +234,19 @@ When working with this project:
 8. **Routing**: Frontend service handles all external traffic
 
 This setup prioritizes simplicity and reliability for production deployments while maintaining flexibility for development environments.
+
+## Context for All AI Assistants
+
+This file (`LLM.md`) is symlinked as:
+- `.AGENTS.md`
+- `CLAUDE.md`
+- `QWEN.md`
+- `GEMINI.md`
+
+All files reference the same knowledge base. Updates here propagate to all AI systems.
+
+## Rules for AI Assistants
+
+1. **ALWAYS** update LLM.md with significant discoveries
+2. **NEVER** commit symlinked files (.AGENTS.md, CLAUDE.md, etc.) - they're in .gitignore
+3. **NEVER** create random summary files - update THIS file
