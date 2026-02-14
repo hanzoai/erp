@@ -19,3 +19,11 @@ node_modules/
 .backportrc.json
 # Aider AI Chat
 .aider*
+
+
+
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+GROK.md
+QWEN.md
