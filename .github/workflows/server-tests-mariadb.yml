@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: hanzo-build-linux-amd64
     timeout-minutes: 60
     env:
       NODE_ENV: "production"
@@ -147,7 +147,7 @@ jobs:
   coverage:
     name: Coverage Wrap Up
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: hanzo-build-linux-amd64
     if: ${{ github.event_name != 'pull_request' }}
     steps:
       - name: Clone

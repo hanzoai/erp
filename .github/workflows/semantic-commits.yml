@@ -13,7 +13,7 @@ concurrency:
 jobs:
   commitlint:
     name: Check Commit Titles
-    runs-on: ubuntu-latest
+    runs-on: hanzo-build-linux-amd64
     steps:
       - uses: actions/checkout@v3
         with:
