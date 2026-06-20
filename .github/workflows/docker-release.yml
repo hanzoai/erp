@@ -4,7 +4,7 @@ on:
     types: [released]
 jobs:
   curl:
-    runs-on: ubuntu-latest
+    runs-on: hanzo-build-linux-amd64
     container:
       image: alpine:latest
     steps:
