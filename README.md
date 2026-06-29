@@ -1,3 +1,5 @@
+<p align="center"><img src=".github/hero.svg" alt="erp" width="880"></p>
+
 # ERPNext Docker Deployment for Hanzo
 
 Self-initializing Docker configurations for deploying ERPNext on Hanzo. No manual setup required - just deploy and go!
