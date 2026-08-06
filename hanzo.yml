@@ -1,0 +1,26 @@
+# Canonical CI/CD config for hanzoai/erp — the one file both the hanzoai/ci
+# reusable (.hanzo/workflows/cicd.yml) and platform.hanzo.ai read.
+#
+# A Frappe app, not a service: it is installed INTO a bench, so there is no
+# image this repo builds and no `deploy:` it can name.
+#
+# The gate is the repo's own pre-commit contract, run on the runner instead of
+# on trust. ruff is pinned to v0.2.0 — the exact rev .pre-commit-config.yaml
+# pins — so the gate cannot go red because ruff shipped a new rule; it goes red
+# only when this code changes. It reads the `[tool.ruff.lint]` select/ignore
+# already in pyproject.toml, so CI and a developer's hook enforce one rule set,
+# not two. compileall is pre-commit's `check-ast` over the whole app: every
+# module must parse, which is the floor for a codebase that is loaded
+# dynamically by doctype rather than imported by a build.
+#
+# Not claimed: the Frappe test suite. It needs a bench, a site, MariaDB and
+# Redis — `make install-app && make create-site` — none of which exist on a
+# build runner. That suite belongs on a bench lane, not smuggled in here.
+test:
+  - name: build
+    run: |
+      set -e
+      command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
+      export PATH="$HOME/.local/bin:$PATH"
+      uvx --from 'ruff==0.2.0' ruff check .
+      python3 -m compileall -q erpnext
